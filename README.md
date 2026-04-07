@@ -1,5 +1,25 @@
 # DocuBot
 
+
+## TF Summary
+* The core concept students needed to understand
+
+_This Tinker is about preparing data to be sent to an AI system; LLMs perform much better with specific and relevant context. Hallucinations are possible otherwise._
+
+* Where students are most likely to struggle
+
+_I think students are most likely to struggle in Phase 3, where you improve the retrieval mode to make it more specific, because this involves a lot of refactoring as you go from whole files to just sections of the documentation._
+
+* Where AI was helpful vs misleading
+
+_AI was helpful for coming up with ideas for how to implement the retrieval system and then for implementing the easiest ways to do it. However, while it could make suggestions for improving it, you still had to test with lots of different sample questions yourself to see where failures occurred._
+
+* One way they would guide a student without giving the answer
+
+_I would encourage them to use Copilot/Claude to break down anything they're confused about or explain certain output first before just diving in and telling AI to fix the code or implement certain steps._
+
+---
+
 DocuBot is a small documentation assistant that helps answer developer questions about a codebase.  
 It can operate in three different modes:
 
