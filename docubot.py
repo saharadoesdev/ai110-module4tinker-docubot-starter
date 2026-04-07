@@ -9,6 +9,7 @@ Core DocuBot class responsible for:
 
 import os
 import glob
+import re
 
 class DocuBot:
     def __init__(self, docs_folder="docs", llm_client=None):
@@ -64,7 +65,14 @@ class DocuBot:
         ignore punctuation if needed.
         """
         index = {}
-        # TODO: implement simple indexing
+
+        for filename, text in documents:
+            tokens = set(re.findall(r"[a-z0-9]+", text.lower()))
+            for token in tokens:
+                if token not in index:
+                    index[token] = set()
+                index[token].add(filename)
+
         return index
 
     # -----------------------------------------------------------
@@ -81,8 +89,10 @@ class DocuBot:
         - Count how many appear in the text
         - Return the count as the score
         """
-        # TODO: implement scoring
-        return 0
+        query_tokens = re.findall(r"[a-z0-9]+", query.lower())
+        text_tokens = set(re.findall(r"[a-z0-9]+", text.lower()))
+
+        return sum(1 for token in query_tokens if token in text_tokens)
 
     def retrieve(self, query, top_k=3):
         """
@@ -91,9 +101,27 @@ class DocuBot:
 
         Return a list of (filename, text) sorted by score descending.
         """
+        query_tokens = re.findall(r"[a-z0-9]+", query.lower())
+
+        candidate_files = set()
+        for token in query_tokens:
+            if token in self.index:
+                candidate_files.update(self.index[token])
+
+        if candidate_files:
+            candidates = [doc for doc in self.documents if doc[0] in candidate_files]
+        else:
+            candidates = list(self.documents)
+
         results = []
-        # TODO: implement retrieval logic
-        return results[:top_k]
+        for filename, text in candidates:
+            score = self.score_document(query, text)
+            if score > 0 or not candidate_files:
+                results.append((score, filename, text))
+
+        results.sort(key=lambda item: (-item[0], item[1]))
+
+        return [(filename, text) for score, filename, text in results[:top_k]]
 
     # -----------------------------------------------------------
     # Answering Modes
