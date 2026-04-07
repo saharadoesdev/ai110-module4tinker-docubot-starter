@@ -12,6 +12,40 @@ import glob
 import re
 
 class DocuBot:
+    MIN_USEFUL_SCORE = 2
+    STOPWORDS = {
+        "a",
+        "an",
+        "and",
+        "are",
+        "as",
+        "at",
+        "be",
+        "by",
+        "does",
+        "for",
+        "from",
+        "how",
+        "i",
+        "in",
+        "is",
+        "it",
+        "of",
+        "on",
+        "or",
+        "tell",
+        "the",
+        "this",
+        "to",
+        "what",
+        "when",
+        "where",
+        "which",
+        "who",
+        "why",
+        "with",
+    }
+
     def __init__(self, docs_folder="docs", llm_client=None):
         """
         docs_folder: directory containing project documentation files
@@ -23,8 +57,11 @@ class DocuBot:
         # Load documents into memory
         self.documents = self.load_documents()  # List of (filename, text)
 
+        # Split documents into smaller retrieval units
+        self.sections = self.build_sections(self.documents)
+
         # Build a retrieval index (implemented in Phase 1)
-        self.index = self.build_index(self.documents)
+        self.index = self.build_index(self.sections)
 
     # -----------------------------------------------------------
     # Document Loading
@@ -45,14 +82,55 @@ class DocuBot:
                 docs.append((filename, text))
         return docs
 
+    def split_into_sections(self, text):
+        """
+        Splits a document into small, consistent sections.
+
+        This uses blank lines as boundaries so each section is usually a
+        paragraph or a short markdown block.
+        """
+        sections = []
+        for part in re.split(r"\n\s*\n", text):
+            chunk = part.strip()
+            if chunk:
+                sections.append(chunk)
+
+        if sections:
+            return sections
+
+        stripped = text.strip()
+        return [stripped] if stripped else []
+
+    def meaningful_tokens(self, text):
+        """
+        Tokenizes text and removes common stopwords so generic wording does not
+        dominate retrieval.
+        """
+        tokens = re.findall(r"[a-z0-9]+", text.lower())
+        return [token for token in tokens if token not in self.STOPWORDS]
+
+    def build_sections(self, documents):
+        """
+        Converts whole documents into section-level retrieval units.
+        Returns a list of tuples: (section_id, text)
+        """
+        sections = []
+
+        for filename, text in documents:
+            for section_number, section_text in enumerate(self.split_into_sections(text), start=1):
+                section_id = f"{filename}::section_{section_number}"
+                sections.append((section_id, section_text))
+
+        return sections
+
     # -----------------------------------------------------------
     # Index Construction (Phase 1)
     # -----------------------------------------------------------
 
-    def build_index(self, documents):
+    def build_index(self, sections):
         """
         TODO (Phase 1):
-        Build a tiny inverted index mapping lowercase words to the documents
+        Build a tiny inverted index mapping lowercase words to the sections
         they appear in.
 
         Example structure:
@@ -66,12 +144,12 @@ class DocuBot:
         """
         index = {}
 
-        for filename, text in documents:
-            tokens = set(re.findall(r"[a-z0-9]+", text.lower()))
+        for section_id, text in sections:
+            tokens = set(self.meaningful_tokens(text))
             for token in tokens:
                 if token not in index:
                     index[token] = set()
-                index[token].add(filename)
+                index[token].add(section_id)
 
         return index
 
@@ -89,8 +167,8 @@ class DocuBot:
         - Count how many appear in the text
         - Return the count as the score
         """
-        query_tokens = re.findall(r"[a-z0-9]+", query.lower())
-        text_tokens = set(re.findall(r"[a-z0-9]+", text.lower()))
+        query_tokens = self.meaningful_tokens(query)
+        text_tokens = set(self.meaningful_tokens(text))
 
         return sum(1 for token in query_tokens if token in text_tokens)
 
@@ -99,29 +177,55 @@ class DocuBot:
         TODO (Phase 1):
         Use the index and scoring function to select top_k relevant document snippets.
 
-        Return a list of (filename, text) sorted by score descending.
+        Return a list of (section_id, text) sorted by score descending.
         """
-        query_tokens = re.findall(r"[a-z0-9]+", query.lower())
+        scored_results = self.retrieve_scored(query, top_k=top_k)
+        return [(section_id, text) for score, section_id, text in scored_results]
 
-        candidate_files = set()
+    def retrieve_scored(self, query, top_k=3):
+        """
+        Returns scored retrieval results as (score, section_id, text).
+
+        This keeps the retrieval pipeline explicit: score first, then decide
+        whether the evidence is strong enough to answer.
+        """
+        query_tokens = self.meaningful_tokens(query)
+
+        candidate_sections = set()
         for token in query_tokens:
             if token in self.index:
-                candidate_files.update(self.index[token])
+                candidate_sections.update(self.index[token])
 
-        if candidate_files:
-            candidates = [doc for doc in self.documents if doc[0] in candidate_files]
+        if candidate_sections:
+            candidates = [section for section in self.sections if section[0] in candidate_sections]
         else:
-            candidates = list(self.documents)
+            candidates = []
 
         results = []
-        for filename, text in candidates:
+        for section_id, text in candidates:
             score = self.score_document(query, text)
-            if score > 0 or not candidate_files:
-                results.append((score, filename, text))
+            if score > 0:
+                results.append((score, section_id, text))
 
         results.sort(key=lambda item: (-item[0], item[1]))
 
-        return [(filename, text) for score, filename, text in results[:top_k]]
+        return results[:top_k]
+
+    def has_useful_context(self, scored_snippets, min_score=None):
+        """
+        Returns True when retrieval found evidence strong enough to answer.
+        """
+        if min_score is None:
+            min_score = self.MIN_USEFUL_SCORE
+
+        if not scored_snippets:
+            return False
+
+        best_score, _, _ = scored_snippets[0]
+        return best_score >= min_score
+
+    def refusal_message(self):
+        return "I don't know based on these docs."
 
     # -----------------------------------------------------------
     # Answering Modes
@@ -132,14 +236,14 @@ class DocuBot:
         Phase 1 retrieval only mode.
         Returns raw snippets and filenames with no LLM involved.
         """
-        snippets = self.retrieve(query, top_k=top_k)
+        snippets = self.retrieve_scored(query, top_k=top_k)
 
-        if not snippets:
-            return "I do not know based on these docs."
+        if not self.has_useful_context(snippets):
+            return self.refusal_message()
 
         formatted = []
-        for filename, text in snippets:
-            formatted.append(f"[{filename}]\n{text}\n")
+        for score, section_id, text in snippets:
+            formatted.append(f"[{section_id}]\n{text}\n")
 
         return "\n---\n".join(formatted)
 
@@ -154,12 +258,13 @@ class DocuBot:
                 "RAG mode requires an LLM client. Provide a GeminiClient instance."
             )
 
-        snippets = self.retrieve(query, top_k=top_k)
+        snippets = self.retrieve_scored(query, top_k=top_k)
 
-        if not snippets:
-            return "I do not know based on these docs."
+        if not self.has_useful_context(snippets):
+            return self.refusal_message()
 
-        return self.llm_client.answer_from_snippets(query, snippets)
+        plain_snippets = [(section_id, text) for score, section_id, text in snippets]
+        return self.llm_client.answer_from_snippets(query, plain_snippets)
 
     # -----------------------------------------------------------
     # Bonus Helper: concatenated docs for naive generation mode
